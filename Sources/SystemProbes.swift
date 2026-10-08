@@ -104,7 +104,42 @@ enum SystemProbes {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
+    static func iPadWiredLinkIsRunning() -> Bool {
+        !ipadWiredLinks().isEmpty
+    }
+
     static func connectedNetworks() -> [DetectedObject] {
+        var objects = ipadWiredLinks()
+        objects.append(contentsOf: configuredNetworks())
+        var seen = Set<String>()
+        return objects
+            .filter { seen.insert($0.id).inserted }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// The iPad USB network interface (`anri*`) appears when the wired Sidecar path is up.
+    /// It has no IPv4 address, so the normal network service list never includes it.
+    private static func ipadWiredLinks() -> [DetectedObject] {
+        var objects: [DetectedObject] = []
+        forEachService("AppleUSBHostNCMRestrictedEthernetInterface") { service in
+            guard registryString(service, "IOInterfaceNamePrefix") == "anri",
+                  let bsd = registryString(service, "BSD Name"),
+                  interfaceIsRunning(bsd) else {
+                return
+            }
+            let usb = usbDeviceIdentity(startingAt: service)
+            let serial = usb?.serial ?? bsd
+            let product = usb?.name ?? "iPad"
+            objects.append(DetectedObject(
+                id: "ipad-link:\(serial)",
+                name: "\(product) 有线网络",
+                detail: "USB 网络接口 \(bsd)，随航有线通道"
+            ))
+        }
+        return objects
+    }
+
+    private static func configuredNetworks() -> [DetectedObject] {
         let wifiNames = Set((CWWiFiClient.shared().interfaces() ?? []).compactMap(\.interfaceName))
         var ssidByInterface: [String: String] = [:]
         for interface in CWWiFiClient.shared().interfaces() ?? [] {
@@ -166,6 +201,46 @@ enum SystemProbes {
         return objects
             .filter { seen.insert($0.id).inserted }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func usbDeviceIdentity(startingAt service: io_registry_entry_t) -> (name: String, serial: String)? {
+        var current = service
+        IOObjectRetain(current)
+        var holding = true
+        var found: (name: String, serial: String)?
+        for _ in 0..<24 {
+            var parent: io_registry_entry_t = 0
+            let result = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+            IOObjectRelease(current)
+            holding = false
+            guard result == KERN_SUCCESS else { break }
+            current = parent
+            holding = true
+            if let serial = registryString(current, "USB Serial Number") {
+                found = (registryString(current, "USB Product Name") ?? "iPad", serial)
+                break
+            }
+        }
+        if holding {
+            IOObjectRelease(current)
+        }
+        return found
+    }
+
+    private static func interfaceIsRunning(_ name: String) -> Bool {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return false }
+        defer { freeifaddrs(first) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            let entry = current.pointee
+            if let rawName = entry.ifa_name, String(cString: rawName) == name {
+                let flags = Int32(entry.ifa_flags)
+                return (flags & IFF_UP) != 0 && (flags & IFF_RUNNING) != 0
+            }
+            cursor = entry.ifa_next
+        }
+        return false
     }
 
     private static func forEachService(_ className: String, _ body: (io_registry_entry_t) -> Void) {

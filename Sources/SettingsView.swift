@@ -76,6 +76,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { pendingDelete = nil }
         }
+        .onAppear { AppWindows.showInDock() }
     }
 
     private var header: some View {
@@ -116,7 +117,8 @@ struct SettingsView: View {
                 Label("添加规则", systemImage: "plus")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
             .padding(12)
         }
     }

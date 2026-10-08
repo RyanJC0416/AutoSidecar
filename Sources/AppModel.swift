@@ -61,7 +61,7 @@ final class AppModel: ObservableObject {
         case .powerConnected: return "接上电源适配器后，这里会出现这一只适配器。"
         case .volumeMounted: return "插上移动硬盘后，这里会出现那一块盘。"
         case .deviceConnected: return "接上扩展坞或其他 USB 设备后，这里会出现那一台设备。"
-        case .networkConnected: return "连上 Wi-Fi 或网线后，这里会出现这个网络。"
+        case .networkConnected: return "连上 Wi-Fi、网线，或 iPad 的 USB 网络接口后，这里会出现这个网络。"
         case .sidecarWiFi, .sidecarWired: return "打开 iPad，并和这台 Mac 使用同一个 Apple 账号，随航设备会出现在这里。"
         default: return ""
         }
@@ -198,7 +198,11 @@ final class AppModel: ObservableObject {
         }
         actionRunning = true
         lastEvent = "正在\(item.action.title)「\(item.deviceName)」…"
-        SidecarController.perform(item.action, deviceID: item.deviceID) { error in
+        SidecarController.perform(item.action, deviceID: item.deviceID, progress: { message in
+            Task { @MainActor in
+                AppModel.shared?.lastEvent = message
+            }
+        }) { error in
             Task { @MainActor in
                 guard let model = AppModel.shared else { return }
                 if let error {

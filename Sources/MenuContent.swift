@@ -18,7 +18,7 @@ struct MenuContent: View {
         Divider()
 
         Button("设置…") {
-            NSApp.activate(ignoringOtherApps: true)
+            AppWindows.showInDock()
             openWindow(id: "settings")
         }
         .keyboardShortcut(",", modifiers: .command)

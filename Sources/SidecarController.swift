@@ -30,14 +30,21 @@ enum SidecarController {
         }
     }
 
-    static func perform(_ action: ActionKind, deviceID: String, completion: @escaping (String?) -> Void) {
+    static func perform(
+        _ action: ActionKind,
+        deviceID: String,
+        progress: @escaping (String) -> Void = { _ in },
+        completion: @escaping (String?) -> Void
+    ) {
         guard frameworkLoaded, let manager = sharedManager() else {
             completion("这台系统读不到随航接口。")
             return
         }
-        guard let device = knownDevices(manager).first(where: {
-            identifier(of: $0)?.caseInsensitiveCompare(deviceID) == .orderedSame
-        }) else {
+        if action == .enableSidecar, SystemProbes.iPadWiredLinkIsRunning() {
+            enableOverWire(manager, deviceID: deviceID, started: Date(), progress: progress, completion: completion)
+            return
+        }
+        guard let device = device(manager, id: deviceID) else {
             completion("随航设备不在当前可检测列表里。")
             return
         }
@@ -45,6 +52,69 @@ enum SidecarController {
             ? "connectToDevice:completion:"
             : "disconnectFromDevice:completion:"
         call(manager, selectorName, device, completion)
+    }
+
+    /// `anri` comes up before the iPad advertises USB. Connecting in that gap makes
+    /// Sidecar start an AWDL session, which dies immediately and shows “设备已断开”.
+    /// `SidecarDevice.status` bit 24 is the USB flag from the rapport device flags.
+    private static let usbReadyBit: UInt = 1 << 24
+    private static let wireWaitLimit: TimeInterval = 75
+
+    private static func enableOverWire(
+        _ manager: NSObject,
+        deviceID: String,
+        started: Date,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (String?) -> Void
+    ) {
+        guard SystemProbes.iPadWiredLinkIsRunning() else {
+            completion("iPad 有线接口断开了，没有发起连接。")
+            return
+        }
+        guard let device = device(manager, id: deviceID) else {
+            completion("随航设备不在当前可检测列表里。")
+            return
+        }
+        let status = (device.value(forKey: "status") as? NSNumber)?.uintValue ?? 0
+        if status & usbReadyBit != 0 {
+            connectWired(manager, device, completion)
+            return
+        }
+        if Date().timeIntervalSince(started) > wireWaitLimit {
+            completion("iPad 有线接口已经出现，但随航有线通道还没就绪，这次没有发起连接。")
+            return
+        }
+        progress("正在等 iPad 有线通道…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            enableOverWire(manager, deviceID: deviceID, started: started, progress: progress, completion: completion)
+        }
+    }
+
+    private static func device(_ manager: NSObject, id: String) -> NSObject? {
+        knownDevices(manager).first {
+            identifier(of: $0)?.caseInsensitiveCompare(id) == .orderedSame
+        }
+    }
+
+    private static func connectWired(_ manager: NSObject, _ device: NSObject, _ completion: @escaping (String?) -> Void) {
+        guard let configClass = NSClassFromString("SidecarDisplayConfig") as? NSObject.Type else {
+            call(manager, "connectToDevice:completion:", device, completion)
+            return
+        }
+        let config = configClass.init()
+        config.setValue(1, forKey: "transport")
+        let selector = NSSelectorFromString("connectToDevice:withConfig:completion:")
+        guard let method = class_getInstanceMethod(type(of: manager), selector) else {
+            call(manager, "connectToDevice:completion:", device, completion)
+            return
+        }
+        typealias Function = @convention(c) (NSObject, Selector, NSObject, NSObject, @convention(block) (NSError?) -> Void) -> Void
+        let function = unsafeBitCast(method_getImplementation(method), to: Function.self)
+        let block: @convention(block) (NSError?) -> Void = { error in
+            let message = error?.localizedDescription
+            DispatchQueue.main.async { completion(message) }
+        }
+        function(manager, selector, device, config, block)
     }
 
     private static func sharedManager() -> NSObject? {
