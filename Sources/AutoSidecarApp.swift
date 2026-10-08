@@ -69,17 +69,44 @@ enum AppWindows {
         return props.paramDescriptor(forKeyword: loginItem)?.booleanValue == true
     }
 
+    private static var closingWindows = Set<ObjectIdentifier>()
+
     static func showInDock() {
+        closingWindows.removeAll()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { bringOnScreen() }
     }
 
+    static func noteWindowClosing(_ window: NSWindow) {
+        closingWindows.insert(ObjectIdentifier(window))
+        hideDockIfNoWindow()
+    }
+
     static func hideDockIfNoWindow() {
-        DispatchQueue.main.async {
-            let open = NSApp.windows.contains { $0.isVisible && $0.canBecomeMain }
-            NSApp.setActivationPolicy(open ? .regular : .accessory)
+        DispatchQueue.main.async { applyDockVisibility() }
+        // SwiftUI can still report the window as visible in the same turn it closes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { applyDockVisibility() }
+    }
+
+    private static func applyDockVisibility() {
+        let open = NSApp.windows.contains { window in
+            window.canBecomeMain
+                && window.isVisible
+                && window.frame.width > 80
+                && window.frame.height > 80
+                && !closingWindows.contains(ObjectIdentifier(window))
         }
+        if open {
+            if NSApp.activationPolicy() != .regular {
+                NSApp.setActivationPolicy(.regular)
+            }
+            return
+        }
+        closingWindows.removeAll()
+        // Switching straight to .accessory leaves the Dock tile in place.
+        NSApp.setActivationPolicy(.prohibited)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     static func bringOnScreen() {
@@ -242,17 +269,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(AppWindows.openAtLaunch ? .regular : .accessory)
         ProcessInfo.processInfo.disableAutomaticTermination("menu-bar")
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowDidClose(_:)),
-            name: Notification.Name("NSWindowDidCloseNotification"),
-            object: nil
-        )
+        for name in ["NSWindowWillCloseNotification", "NSWindowDidCloseNotification"] {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidClose(_:)),
+                name: Notification.Name(name),
+                object: nil
+            )
+        }
     }
 
     @objc private func windowDidClose(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, window.canBecomeMain else { return }
-        AppWindows.hideDockIfNoWindow()
+        guard let window = notification.object as? NSWindow else { return }
+        guard window.canBecomeMain || window.title == "自动随航" else { return }
+        AppWindows.noteWindowClosing(window)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
